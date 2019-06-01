@@ -1,1 +1,1 @@
-# Time-Varying-Weather-Cycling-Pattern-Discovery
+# Time-Varying Weather-Cycling Pattern Discovery
