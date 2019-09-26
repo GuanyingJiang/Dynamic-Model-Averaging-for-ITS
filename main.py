@@ -19,6 +19,7 @@ from datetime import datetime as dtt
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+from scipy import stats
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator,FormatStrFormatter
@@ -39,11 +40,203 @@ np.random.seed(SEED)
 random.seed(SEED)
 
 
+def forecast_metrics(model, h_fore, y_t_DMA, y_t_BEST):
+	'''
+	Model forecast comparisons
+	'''
+	MAFE_DMA = np.abs((model.y_t[h_fore:model.T] - y_t_DMA[:model.T-h_fore])/model.y_t[h_fore:model.T])
+	MSFE_DMA = (model.y_t[h_fore:model.T] - y_t_DMA[:model.T-h_fore])**2
+
+	MAFE_DMS = np.abs((model.y_t[h_fore:model.T] - y_t_BEST[:model.T-h_fore])/model.y_t[h_fore:model.T])
+	MSFE_DMS = (model.y_t[h_fore:model.T] - y_t_BEST[:model.T-h_fore])**2
+
+	forecast = np.matrix([np.mean(MAFE_DMA[xl:]), np.sqrt(np.mean(MSFE_DMA[xl:])), 
+								np.mean(MAFE_DMS[xl:]), np.sqrt(np.mean(MSFE_DMS[xl:]))])
+	forecast = pd.DataFrame(forecast, columns=['MAFE_DMA', 'MSFE_DMA', 'MAFE_DMS', 'MSFE_DMS'], index=[str(hlag)+sheetX+sheetY])
+	print('\n',forecast)
+
+	eps_a = model.y_t[h_fore:model.T] - y_t_DMA[:model.T-h_fore]
+	eps_s = model.y_t[h_fore:model.T] - y_t_BEST[:model.T-h_fore]
+
+	distr = np.round(np.matrix([stats.skew(eps_a), stats.skew(eps_s), 
+					stats.kurtosis(eps_a,fisher=False), stats.kurtosis(eps_s,fisher=False)]), 6)
+	distr = pd.DataFrame(distr, columns=['skew_a', 'skew_s', 'kurtosis_a', 'kurtosis_s'])
+	print(distr,'\n')
+
+
+def best_predictive_models(model, best_model):
+	'''
+	The combination of predictive models
+	'''
+	table = Counter(best_model[ind:]).most_common(10)
+	for ii,tb in enumerate(table):
+		xid = model.index[int(tb[0])]
+		xids = [model.Xnames[i] for i in xid]
+		print(tb, xids)
+
+
+def best_model_size(model, prob_pred, best_model, ticks, xl, ind, fig_path, sheetX):
+	'''
+	Expected number of main influencing factors at the average level over time
+	'''
+	rs, cs = prob_pred.shape
+	ss = [len(model.index[ii]) for ii in range(cs)]
+
+	Esize = [sum(ss * prob_pred[ii+ind,:]) for ii in range(1,xl)]
+	Csize = [len(model.index[int(best_model[ii+ind])]) for ii in range(1,xl)]
+
+	fig = plt.figure(figsize=(15,9))
+	ax = fig.add_subplot(111)
+	(markers, stemlines, baseline) = plt.stem(Csize, linefmt='brown', markerfmt='brown')
+	plt.setp(markers, marker='o', alpha=0.6)
+	plt.plot(Esize, linewidth=2.0)
+
+	ax.grid(color='grey', linestyle='--', linewidth=1.5, alpha=0.9)
+	ax.legend([r'$N_{DMA}$', r'$N_{DMS}$'], title='', frameon=False, fancybox=False)
+	ax.set_xlim(0, xl)
+	ax.set_ylim(1, len(model.Xnames)-1)
+	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
+	ax.set_xticklabels(ticks,rotation=45)
+	ax.spines['bottom'].set_visible(True)
+	ax.spines['left'].set_visible(True)
+	ax.spines['right'].set_visible(False)
+	ax.spines['top'].set_visible(False)
+	ax.set_xlabel('')
+	ax.set_ylabel('')
+	ax.set_title('')
+	plt.tight_layout()
+	plt.savefig(fig_path + 'size_' + sheetX + '.pdf')
+
+
+def best_model_index(model, best_model, ticks, xl, fig_path, sheetX):
+	'''
+	How the probabilities move at each point in time and which is the best model for each "t"
+	'''
+	fig = plt.figure(figsize=(15,9))
+	ax = fig.add_subplot(111)
+	(markers, stemlines, baseline) = plt.stem(best_model+1, markerfmt='o')
+	plt.setp(markers, alpha=0.6)
+
+	ax.spines['bottom'].set_visible(True)
+	ax.spines['left'].set_visible(True)
+	ax.spines['right'].set_visible(True)
+	ax.spines['top'].set_visible(True)
+	ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.9)
+	ax.set_xlim(0, xl-1)
+	ax.set_ylim(1, model.K)
+	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
+	ax.set_xticklabels(ticks, rotation=45)
+	ax.set_xlabel('')
+	ax.set_ylabel('')
+	ax.set_title('')
+	plt.tight_layout()
+	plt.savefig(fig_path + 'one_' + sheetX + '.pdf')
+
+
+def posterior_inclusion_probability(firstX, lastX, g_index_tmp, dataset, model, prob_update, ticks1, xl, fig_path, sheetX):
+	'''
+	Time-varying posterior inclusion probability of restricted variables
+	'''
+	if lastX-firstX == 6:
+		fig = plt.figure(figsize=(18,11))
+	elif lastX-firstX == 12:
+		fig = plt.figure(figsize=(18,22))
+	iplot = 1
+
+	for index_variable,g_index in enumerate(g_index_tmp):
+		ax = fig.add_subplot(int((lastX-firstX)/3), 3, iplot)
+		prob_variable = np.sum(np.squeeze(prob_update[:,g_index]), axis=1)
+		plt.plot(prob_variable[ind:], alpha=0.9, linewidth=2.0, color='royalblue')
+		iplot += 1
+
+		if dataset == 1:
+			for pc in (1,3):
+				ax.add_patch(patches.Rectangle((pc*91,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
+		elif dataset == 2:
+			ax.add_patch(patches.Rectangle((0,0), 31, 1, alpha=0.15, facecolor='peachpuff'))
+			ax.add_patch(patches.Rectangle((121,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
+
+		ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.25)
+		ax.set_xlim(0,xl)
+		ax.set_ylim(0,1)
+		ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks1)+1))
+		ax.set_xticklabels(ticks1, rotation=45)
+		ax.spines['bottom'].set_visible(True)
+		ax.spines['left'].set_visible(True)
+		ax.spines['bottom'].set_color('grey')
+		ax.spines['left'].set_color('grey')
+		ax.spines['right'].set_visible(False)
+		ax.spines['top'].set_visible(False)
+		ax.set_xlabel('')
+		ax.set_ylabel('')
+		ax.set_title(r'$\rm %s$' % model.Xnames[index_variable+1])
+
+	plt.tight_layout()
+	plt.savefig(fig_path + 'probs_' + sheetX + '.pdf')
+
+
+def posterior_means_coefficients(firstX, lastX, g_index_tmp, model, theta_update_all, ticks1, xl, ind, fig_path, sheetX):
+	'''
+	Posterior means of regression coefficients of restricted variables
+	'''
+	time_range = len(theta_update_all[0])
+	model_size = len(theta_update_all)
+	theta_set = []
+
+	for t_1 in range(time_range):
+		temp = np.zeros((model_size, lastX-firstX+1))
+		for ii in range(model.K):
+			temp[ii, np.array(model.index[ii])] = theta_update_all[ii][t_1].T
+		theta_set.append(temp[:,1:])
+
+	theta_mean = np.zeros((time_range,lastX-firstX))
+	theta_max = np.zeros((time_range,lastX-firstX))
+	theta_min = np.zeros((time_range,lastX-firstX))
+	for index_variable,g_index in enumerate(g_index_tmp):
+		for t_2 in range(time_range):
+			theta_mean[t_2,index_variable] = np.mean(theta_set[t_2][g_index,index_variable])
+			theta_max[t_2,index_variable] = np.max(theta_set[t_2][g_index,index_variable])
+			theta_min[t_2,index_variable] = np.min(theta_set[t_2][g_index,index_variable])
+
+	fig = plt.figure(figsize=(18,11))
+	for ii in range(lastX-firstX):
+		ax = fig.add_subplot(2,3,ii+1)
+
+		ax.fill_between(list(range(time_range-ind)), 
+					theta_max[ind:,ii], theta_min[ind:,ii],
+					facecolor='brown', alpha=0.22)
+		plt.plot(theta_mean[ind:,ii], alpha=0.91, linewidth=2.0, color='royalblue')
+
+		ax.set_xlim(0,xl)
+		xmin, xmax, ymin, ymax = ax.axis()
+		for pc in (1,3):
+			ax.add_patch(patches.Rectangle((pc*91,ymin), 91, ymax-ymin, alpha=0.15, facecolor='peachpuff'))
+		ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+		ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.25)
+		ticks1 = ['Sep.', '', '', 'Dec.', '', '', 'Mar.', '', '', 'Jun.', '', '']
+		ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks1)+1))
+		ax.set_xticklabels(ticks1, rotation=45)
+
+		ax.spines['bottom'].set_visible(True)
+		ax.spines['left'].set_visible(True)
+		ax.spines['bottom'].set_color('grey')
+		ax.spines['left'].set_color('grey')
+		ax.spines['right'].set_visible(False)
+		ax.spines['top'].set_visible(False)
+		ax.set_xlabel('')
+		ax.set_ylabel('')
+		ax.set_title(r'$\rm %s$' % model.Xnames[ii+1])
+
+	plt.tight_layout()
+	plt.savefig(fig_path + 'theta_' + sheetX + '.pdf')
+
+
+
 if __name__ == '__main__':
 	# ------------------------------ INITIALIZATION ------------------------------
 	path = 'citibike/'
-	out_path = 'data/' # '../data/','../mat','../functions'
-	fig_path = 'fig/'  # 'fig/lag_', 'fig/', 'fig0/'
+	out_path = 'data/'
+	fig_path = 'fig/'
 
 	# --------------------------- MODEL SPECIFICATION ----------------------------
 	'''
@@ -169,10 +362,14 @@ if __name__ == '__main__':
 	Define the last observation of the first sample
 	used to start producing forecasts recursively.
 	'''
-	first_sample_ends = '2017-08-31'  # '2017-08-31', '2018-01-31'
+
+	first_sample_ends = '2017-08-31'
+
 
 	# MODEL SETTINGS
-	## !! CHECK: dataset, unknown_var, hlag, LAMBDA, ALPHA, KAPPA, first_sample_ends, fig_path
+	print('dataset: %s\nunknown_var: %s\nhlag: %s\nLAMBDA: %.2f\nALPHA: %.2f\nKAPPA: %.2f\nfirst_sample_ends: %s\nfig_path: %s\n'
+		% (dataset, unknown_var, hlag, LAMBDA, ALPHA, KAPPA, first_sample_ends, fig_path))
+
 	model = MdPp(path, out_path, stationarity, use_x, use_other,
 				miss_treatment, dataset, intercept, plag, hlag,
 				apply_dma, LAMBDA, ALPHA, KAPPA, forgetting_method,
@@ -186,26 +383,11 @@ if __name__ == '__main__':
 
 	# --------------------------------- DATA ----------------------------------
 	T0 = time()
-	# !! CHECK: dataX, dataY
-
-	sheetX = 'all6'  # part6/all6/all6-1/all12/all12-1/allmax/allmin
+	sheetX = 'all6'
 	dataX = pd.read_excel(out_path + 'weather.xlsx', sheetname=sheetX, header=0)
-	# # x = pd.read_excel(out_path + 'weather.xlsx', sheetname='all12', header=0)
-	# # dataX['weekdays'] = x['weekdays']
-	# # print(dataX.head())
 	nameX = list(dataX.columns)
 
 	sheetY = 'young'
-	# 'trips1.xlsx'
-	# young/middle/elderly/young1-4
-	# 'trips2.xlsx'
-	# ycus/ysub/mcus/msub/ecus/esub
-	# ymale/yfemale/mmale/mfemale/emale/efemale
-	# y1sub/y2sub/y3sub/y4sub/
-	# y1cus/y2cus/y3cus/y4cus/
-	# y1male/y2male/y3male/y4male/
-	# y1female/y2female/y3female/y4female/
-	# gd1cus/gd2cus/gd1sub/gd2sub
 	dataY = pd.read_excel(out_path + 'trips1.xlsx', sheetname=sheetY, header=0)
 	nameY = list(dataY.columns)
 
@@ -219,10 +401,8 @@ if __name__ == '__main__':
 	dataY = dataY.values
 	dataY -= dataY.min()
 	dataY = dataY/dataY.max()
+	print('dataX:', sheetX, dataX.shape, '\ndataY:', sheetY, dataY.shape, '\n')
 
-	# nY = dataY.shape[1]
-	## Potential direction: multiple dependent variables (use nY)
-	## Potential Direction: stations/odpairs
 
 	# ---------------------------- PRELIMINARIES -----------------------------
 	## STEP1: DATA HANDLING
@@ -287,6 +467,7 @@ if __name__ == '__main__':
 	ind = start
 	xl = len(y_t_DMA) - ind
 
+
 	# Time ticks
 	if dataset == 1:
 		ticks = ['Sep.', 'Oct.', 'Nov.', 'Dec.', 'Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.']
@@ -295,161 +476,8 @@ if __name__ == '__main__':
 		ticks = ['Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.']
 		ticks1 = ['', 'Mar.', '', '', 'Jun.', '', '', 'Sep.', '']
 
-	# Expected size of main predictors
-	rs, cs = prob_pred.shape
-	ss = [len(model.index[ii]) for ii in range(cs)]
 
-
-	# Size of the selected models
-	Esize = [sum(ss * prob_pred[ii+ind,:]) for ii in range(1,xl)]
-	Csize = [len(model.index[int(best_model[ii+ind])]) for ii in range(1,xl)]
-	fig = plt.figure(figsize=(15,9))
-	ax = fig.add_subplot(111)
-	(markers, stemlines, baseline) = plt.stem(Csize, linefmt='brown', markerfmt='brown')
-	plt.setp(markers, marker='o', alpha=0.6)
-	plt.plot(Esize, linewidth=2.0)
-	ax.grid(color='grey', linestyle='--', linewidth=1.5, alpha=0.9)
-	ax.legend([r'$N_{DMA}$', r'$N_{DMS}$'], title='', frameon=False, fancybox=False)
-	ax.set_xlim(0, xl)
-	ax.set_ylim(1, len(model.Xnames)-1)
-	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
-	ax.set_xticklabels(ticks,rotation=45)
-	ax.spines['bottom'].set_visible(True)
-	ax.spines['left'].set_visible(True)
-	ax.spines['right'].set_visible(False)
-	ax.spines['top'].set_visible(False)
-	ax.set_xlabel('')
-	ax.set_ylabel('')
-	ax.set_title('')  # Expected number of influencing factors at the average level over time
-	plt.tight_layout()
-	plt.savefig(fig_path + 'size_' + sheetX + '.pdf')
-
-
-	# Plot the probs of the k-th model
-	k = 21
-	# plt.plot(prob_update[:,k])
-	# plt.show()
-	# Present the regression coefficients whose variables are used in model k
-	mname = [model.Xnames[ii] for ii in model.index[k]]
-	print('\n', k, mname, '\n')
-
-
-	# How the probabilities move at each point in time and which is the best model for each "t"
-	fig = plt.figure(figsize=(15,9))
-	ax = fig.add_subplot(111)
-	(markers, stemlines, baseline) = plt.stem(best_model+1, markerfmt='o')
-	plt.setp(markers, alpha=0.6)
-	ax.spines['bottom'].set_visible(True)
-	ax.spines['left'].set_visible(True)
-	ax.spines['right'].set_visible(True)
-	ax.spines['top'].set_visible(True)
-	ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.9)
-	ax.set_xlim(0, xl-1)
-	ax.set_ylim(1, model.K)
-	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
-	ax.set_xticklabels(ticks, rotation=45)
-	ax.set_xlabel('')
-	ax.set_ylabel('')
-	ax.set_title('')
-	plt.tight_layout()
-	plt.savefig(fig_path + 'one_' + sheetX + '.pdf')
-
-
-	# Comparison between DMA predictions and Best model predictions based on the original observation
-	fig = plt.figure(figsize=(15,9))
-	ax = fig.add_subplot(111)
-	color_sequence = ['#aec7e8', '#ff9896', '#9467bd']
-	# color_sequence = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c',
-						# '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5',
-						# '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f',
-						# '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
-	plt.plot(model.y_t[ind:-h_fore], linewidth=2.5, color=color_sequence[0])
-	plt.plot(y_t_DMA[ind:], linewidth=2.5, color=color_sequence[1])
-	plt.plot(y_t_BEST[ind:], linewidth=2.5, color=color_sequence[2])
-	for pc in (1,3):
-		ax.add_patch(patches.Rectangle((pc*91,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
-	ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.9)
-	ax.legend([r'$y$', r'$y_{DMA}$', r'$y_{DMS}$'], title='', frameon=False, fancybox=False)
-	ax.set_xlim(0, xl)
-	ax.set_ylim(0, 1)
-	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
-	ax.set_xticklabels(ticks, rotation=45)
-	ax.spines['bottom'].set_visible(True)
-	ax.spines['left'].set_visible(True)
-	ax.spines['right'].set_visible(False)
-	ax.spines['top'].set_visible(False)
-	ax.set_xlabel('')
-	ax.set_ylabel('')
-	ax.set_title('')  # The original and estimated series (DMA/DMS)
-	plt.tight_layout()
-	plt.savefig(fig_path + 'predict_' + sheetX + '.pdf')
-
-
-	# Maximum probability of a single model at each point in time
-	fig = plt.figure(figsize=(12,9))
-	ax = fig.add_subplot(111)
-	plt.plot(max_prob[ind:], c='blue', linewidth=1.5)
-	ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.8)
-	ax.set_xlim(0, xl)
-	# ax.set_ylim(1, model.K)
-	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)))
-	ax.set_xticklabels(ticks, rotation=0)
-	ax.set_xlabel('')
-	ax.set_ylabel('')
-	ax.set_title('')  # Maximum probability of a single model over time
-	plt.tight_layout()
-	plt.savefig(fig_path + 'maxprob_' + sheetX + '.pdf')
-
-
-	# The combination of prediction models
-	table = Counter(best_model[ind:]).most_common(4)
-	fig = plt.figure(figsize=(12,9))
-	ax = fig.add_subplot(111)
-	for ii,tb in enumerate(table):
-		xid = model.index[int(tb[0])]
-		xids = [model.Xnames[i] for i in xid]
-		print(tb, xids)
-		plt.plot(prob_update[:,int(tb[0])], linewidth=1.5)
-	ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.6)
-	ax.legend(['MODEL - ' + str(int(i[0])) for i in table], title='', frameon=False, fancybox=False)
-	ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks)+1))
-	ax.set_xticklabels(ticks, rotation=45)
-	ax.spines['bottom'].set_visible(True)
-	ax.spines['left'].set_visible(True)
-	ax.spines['right'].set_visible(False)
-	ax.spines['top'].set_visible(False)
-	ax.set_xlim(0, xl)
-	# ax.set_ylim(0, 0.2)
-	plt.axhline(y=0.1, color='black', linestyle='--', linewidth=1.0, alpha=0.6)
-	plt.tight_layout()
-	plt.savefig(fig_path + 'table_' + sheetX + '.pdf')
-
-
-	# Forecast statistics
-	# writer = pd.ExcelWriter(out_path + 'forecast.xlsx')  # Comment out
-	MAFE_DMA = np.abs((model.y_t[h_fore:model.T] - y_t_DMA[:model.T-h_fore])/model.y_t[h_fore:model.T])
-	MSFE_DMA = (model.y_t[h_fore:model.T] - y_t_DMA[:model.T-h_fore])**2
-
-	MAFE_DMS = np.abs((model.y_t[h_fore:model.T] - y_t_BEST[:model.T-h_fore])/model.y_t[h_fore:model.T])
-	MSFE_DMS = (model.y_t[h_fore:model.T] - y_t_BEST[:model.T-h_fore])**2
-
-	# forecast = np.matrix([sum(MAFE_DMA[xl:]), np.sqrt(sum(MSFE_DMA[xl:])), sum(MAFE_DMS[xl:]), np.sqrt(sum(MSFE_DMS[xl:]))])
-	forecast = np.matrix([np.mean(MAFE_DMA[xl:]), np.sqrt(np.mean(MSFE_DMA[xl:])), 
-								np.mean(MAFE_DMS[xl:]), np.sqrt(np.mean(MSFE_DMS[xl:]))])
-	forecast = pd.DataFrame(forecast, columns=['MAFE_DMA', 'MSFE_DMA', 'MAFE_DMS', 'MSFE_DMS'], index=[str(hlag)+sheetX+sheetY])
-	print(forecast)
-	# wb = openpyxl.load_workbook(out_path + 'forecast.xlsx')
-	# ws = wb.create_sheet(title=str(hlag)+sheetX+sheetY, index=0)
-	# rows = dataframe_to_rows(forecast)
-	# for r_idx, row in enumerate(rows,1):
-	# 	for c_idx, value in enumerate(row,1):
-	# 		ws.cell(row=r_idx, column=c_idx, value=value)
-	# wb.save(out_path + 'forecast.xlsx')
-	# # forecast.to_excel(out_path + 'forecast.xlsx', sheet_name=sheetX + sheetY)
-	# # writer.save()  # Comment out
-
-
-	# Make probability plots of restricted variables
+	# Obtain the first and the last variable index
 	if len(model.index[model.K-1]) == 0:
 		firstX = 0
 		lastX = model.z_t.shape[1]
@@ -457,14 +485,8 @@ if __name__ == '__main__':
 		firstX = max(model.index[model.K-1]) + 1
 		lastX = max(model.index[model.K-1]) + model.z_t.shape[1] + 1
 
-	if lastX-firstX == 6:
-		fig = plt.figure(figsize=(18,11))
-	elif lastX-firstX == 12:
-		fig = plt.figure(figsize=(18,22))
-	iplot = 1
-	backup = np.zeros((xl, lastX-firstX))
-	# writer = pd.ExcelWriter(out_path + 'prob_variable.xlsx')  # Comment out
 
+	# Obtain the model index with the specific factor
 	g_index_tmp = []
 	for index_variable in range(firstX, lastX):
 		g_index = []
@@ -474,175 +496,17 @@ if __name__ == '__main__':
 				g_index.append(ii)
 		g_index_tmp.append(g_index)
 
-	for index_variable,g_index in enumerate(g_index_tmp):
-		ax = fig.add_subplot(int((lastX-firstX)/3), 3, iplot)
-		prob_variable = np.sum(np.squeeze(prob_update[:,g_index]), axis=1)
-		plt.plot(prob_variable[ind:], alpha=0.9, linewidth=2.0, color='royalblue')
-		backup[:,iplot-1] = prob_variable[ind:]
-		iplot += 1
 
-		if dataset == 1:
-			for pc in (1,3):
-				ax.add_patch(patches.Rectangle((pc*91,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
-		elif dataset == 2:
-			ax.add_patch(patches.Rectangle((0,0), 31, 1, alpha=0.15, facecolor='peachpuff'))
-			ax.add_patch(patches.Rectangle((121,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
+	# Output results
+	forecast_metrics(model, h_fore, y_t_DMA, y_t_BEST)
 
-		ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.25)
-		# ax.legend()
-		ax.set_xlim(0,xl)
-		ax.set_ylim(0,1)
-		ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks1)+1))
-		ax.set_xticklabels(ticks1, rotation=45)
-		ax.spines['bottom'].set_visible(True)
-		ax.spines['left'].set_visible(True)
-		ax.spines['bottom'].set_color('grey')
-		ax.spines['left'].set_color('grey')
-		ax.spines['right'].set_visible(False)
-		ax.spines['top'].set_visible(False)
-		ax.set_xlabel('')
-		ax.set_ylabel('')
-		ax.set_title(r'$\rm %s$' % model.Xnames[index_variable+1])  # Time-varying probability of inclusion of variable xxx
+	best_predictive_models(model, best_model)
 
-	plt.tight_layout()
-	plt.savefig(fig_path + 'probs_' + sheetX + '.pdf')
-	backup = pd.DataFrame(backup, columns=model.Xnames[firstX:lastX])
+	best_model_size(model, prob_pred, best_model, ticks, xl, ind, fig_path, sheetX)
 
-	# wb = openpyxl.load_workbook(out_path + 'prob_variable.xlsx')
-	# ws = wb.create_sheet(title=str(hlag)+sheetX+sheetY, index=0)
-	# rows = dataframe_to_rows(backup)
-	# for r_idx, row in enumerate(rows,1):
-	# 	for c_idx, value in enumerate(row,1):
-	# 		ws.cell(row=r_idx, column=c_idx, value=value)
-	# wb.save(out_path + 'prob_variable.xlsx')
-	# # backup.to_excel(out_path + 'prob_variable.xlsx', sheet_name=sheetX+sheetY)
-	# # writer.save()  # Comment out
+	best_model_index(model, best_model, ticks, xl, fig_path, sheetX)
 
+	posterior_inclusion_probability(firstX, lastX, g_index_tmp, dataset, model, prob_update, ticks1, xl, fig_path, sheetX)
 
-	# Cross comparisons
-	subs = [['0all6young', '0all6middle', '0all6elderly'], ['0part6gd1sub', '0part6gd2sub', '0part6gd1cus', '0part6gd2cus']]
-	legends = [['young', 'middle', 'elderly'], ['sub.male', 'sub.female', 'cus.male', 'cus.female']]
-
-	for v,sub in enumerate(subs):
-		subset = []
-		for ii in sub:
-			temp = pd.read_excel('data/prob_variable.xlsx', sheet_name=ii, index_col=0, header=0)
-			subset.append(np.array(temp))
-		print(len(subset), subset[0].shape)
-
-		fig = plt.figure(figsize=(18,11))
-		for index_variable,g_index in enumerate(g_index_tmp):
-			ax = fig.add_subplot(2,3,index_variable+1)
-
-			if len(subset) == 3:
-				colors = ['royalblue', 'brown', 'orange']
-				for idx in range(len(subset)):
-					plt.plot(subset[idx][:,index_variable], alpha=0.7, linewidth=2.0, c=colors[idx])
-
-				ax.set_xlim(0, 396-ind)
-				ticks1 = ['Sep.', '', '', 'Dec.', '', '', 'Mar.', '', '', 'Jun.', '', '']
-				for pc in (1,3):
-					ax.add_patch(patches.Rectangle((pc*91,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
-
-			elif len(subset) == 4:
-				plt.plot(subset[0][:,index_variable], c='royalblue', alpha=0.8, linestyle='-', linewidth=2.0)
-				plt.plot(subset[1][:,index_variable], c='royalblue', alpha=0.8, linestyle=':', linewidth=2.0)
-
-				plt.plot(subset[2][:,index_variable], c='brown', alpha=0.8, linestyle='-', linewidth=2.0)
-				plt.plot(subset[3][:,index_variable], c='brown', alpha=0.8, linestyle=':', linewidth=2.0)
-
-				ax.fill_between(list(range(304-ind-1)), 
-					subset[0][:,index_variable], subset[1][:,index_variable], 
-					facecolor='aqua', alpha=0.29)
-
-				ax.fill_between(list(range(304-ind-1)), 
-					subset[2][:,index_variable], subset[3][:,index_variable], 
-					facecolor='yellow', alpha=0.29)
-
-				ax.set_xlim(0, 304-ind)
-				ticks1 = ['', 'Mar.', '', '', 'Jun.', '', '', 'Sep.', '']
-				ax.add_patch(patches.Rectangle((0,0), 31, 1, alpha=0.15, facecolor='peachpuff'))
-				ax.add_patch(patches.Rectangle((121,0), 91, 1, alpha=0.15, facecolor='peachpuff'))
-
-			ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.25)
-			ax.set_ylim(0,1)
-			ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks1)+1))
-			ax.set_xticklabels(ticks1, rotation=45)
-			ax.set_title(r'$\rm %s$' % model.Xnames[index_variable+1])
-
-			ax.spines['bottom'].set_visible(True)
-			ax.spines['left'].set_visible(True)
-			ax.spines['bottom'].set_color('grey')
-			ax.spines['left'].set_color('grey')
-			ax.spines['right'].set_visible(False)
-			ax.spines['top'].set_visible(False)
-
-			if index_variable == 3:
-				ax.legend(legends[v], title='', frameon=False, fancybox=False)
-
-		ax.set_xlabel('')
-		ax.set_ylabel('')
-		plt.tight_layout()
-		plt.savefig(fig_path + 'cross_' + str(len(subset)) + '.pdf')
-
-
-	# Posterior coefficients
-	time_range = len(theta_update_all[0])
-	model_size = len(theta_update_all)
-	theta_set = []
-
-	for t_1 in range(time_range):
-		temp = np.zeros((model_size, lastX-firstX+1))
-		for ii in range(model.K):
-			temp[ii, np.array(model.index[ii])] = theta_update_all[ii][t_1].T
-		theta_set.append(temp[:,1:])
-
-	theta_mean = np.zeros((time_range,lastX-firstX))
-	theta_max = np.zeros((time_range,lastX-firstX))
-	theta_min = np.zeros((time_range,lastX-firstX))
-	for index_variable,g_index in enumerate(g_index_tmp):
-		for t_2 in range(time_range):
-			theta_mean[t_2,index_variable] = np.mean(theta_set[t_2][g_index,index_variable])
-			theta_max[t_2,index_variable] = np.max(theta_set[t_2][g_index,index_variable])
-			theta_min[t_2,index_variable] = np.min(theta_set[t_2][g_index,index_variable])
-
-	# theta_best1 = np.zeros((time_range,lastX-firstX))
-	# for index_variable,g_index in enumerate(g_index_tmp):
-	# 	for t_2 in range(time_range):
-	# 		theta_best1[t_2,index_variable] = theta_set[t_2][1,index_variable]  # 13, 37
-
-	fig = plt.figure(figsize=(18,11))
-	for ii in range(lastX-firstX):
-		ax = fig.add_subplot(2,3,ii+1)
-
-		ax.fill_between(list(range(time_range-ind)), 
-					theta_max[ind:,ii], theta_min[ind:,ii],
-					facecolor='brown', alpha=0.22)
-
-		plt.plot(theta_mean[ind:,ii], alpha=0.91, linewidth=2.0, color='royalblue')
-
-		ax.set_xlim(0,xl)
-		xmin, xmax, ymin, ymax = ax.axis()
-		for pc in (1,3):
-			ax.add_patch(patches.Rectangle((pc*91,ymin), 91, ymax-ymin, alpha=0.15, facecolor='peachpuff'))
-		ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-
-		ax.grid(color='grey', linestyle='--', linewidth=1.0, alpha=0.25)
-		ticks1 = ['Sep.', '', '', 'Dec.', '', '', 'Mar.', '', '', 'Jun.', '', '']
-		ax.xaxis.set_major_locator(plt.MaxNLocator(len(ticks1)+1))
-		ax.set_xticklabels(ticks1, rotation=45)
-
-		ax.spines['bottom'].set_visible(True)
-		ax.spines['left'].set_visible(True)
-		ax.spines['bottom'].set_color('grey')
-		ax.spines['left'].set_color('grey')
-		ax.spines['right'].set_visible(False)
-		ax.spines['top'].set_visible(False)
-
-		ax.set_xlabel('')
-		ax.set_ylabel('')
-		ax.set_title(r'$\rm %s$' % model.Xnames[ii+1])
-
-	plt.tight_layout()
-	plt.savefig(fig_path + 'theta_' + sheetX + '.pdf')
+	posterior_means_coefficients(firstX, lastX, g_index_tmp, model, theta_update_all, ticks1, xl, ind, fig_path, sheetX)
 
